@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>股票诊断</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'Microsoft YaHei',sans-serif;background:#f5f5f5;padding:15px;color:#333;max-width:700px;margin:0 auto}
+header{text-align:center;margin-bottom:15px}
+h2{font-size:20px}
+.sub{font-size:12px;color:#888;margin-top:3px}
+.search{text-align:center;margin-bottom:15px}
+.search input{padding:8px 12px;font-size:15px;width:140px;border:1px solid #ddd;border-radius:6px}
+.search button{padding:8px 16px;font-size:15px;background:#1677ff;color:#fff;border:none;border-radius:6px;cursor:pointer;margin-left:6px}
+.card{background:#fff;border-radius:10px;padding:14px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+.flex{display:flex;justify-content:space-between;align-items:center}
+.tip{font-size:11px;color:#999;margin-top:4px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.cell{background:#f8f8f8;border-radius:6px;padding:8px;text-align:center}
+.cell .l{font-size:10px;color:#777;margin-bottom:2px}
+.cell .v{font-size:14px;font-weight:600}
+.cell .v.red{color:#e64329}
+.cell .v.green{color:#2f8536}
+.score-row{text-align:center;padding:10px 0}
+.score-num{font-size:48px;font-weight:bold;line-height:1}
+.score-label{font-size:14px;font-weight:bold;padding:4px 14px;border-radius:5px;color:#fff}
+.advice{padding:12px;border-radius:8px;font-size:14px;font-weight:bold;text-align:center}
+.dims{display:flex;gap:5px;justify-content:center;flex-wrap:wrap}
+.dim{background:#f0f0f0;border-radius:5px;padding:6px 10px;text-align:center;min-width:55px}
+.dim .icon{font-size:16px}
+.dim .name{font-size:9px;color:#888;margin:2px 0 0}
+.dim .val{font-size:15px;font-weight:bold}
+.warning{background:#fff7e6;border:1px solid #ffd591;color:#d48806;padding:8px;border-radius:6px;font-size:12px;text-align:center;margin-bottom:10px}
+.help{font-size:11px;color:#777;line-height:1.5;padding-top:8px;border-top:1px solid #eee;margin-top:8px}
+.warning+.card{margin-top:0}
+@media(max-width:450px){.grid{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<header><h2>📊 股票诊断</h2><div class="sub">腾讯财经实时数据</div></header>
+<div class="search"><input id="code" value="600036"><button onclick="run()">即时诊断</button></div>
+<div id="out" style="display:none"></div>
+<div id="trendOut" style="display:none"></div>
+
+<script>
+// ============================================================
+// 腾讯行情接口字段（来源：官方文档 + 多股交叉验证）
+// d[ 1] 名称  d[ 2] 代码  d[ 3] 当前价  d[ 4] 昨收  d[ 5] 今开
+// d[ 6] 成交量(手)  d[ 7] 外盘  d[ 8] 内盘
+// d[31] 涨跌额  d[32] 涨跌幅%  d[33] 最高  d[34] 最低
+// d[37] 成交额(万元)  d[38] 换手率%  d[39] 市盈率PE  d[43] 振幅%
+// d[44] 总市值(亿)  d[45] 流通市值(亿)  d[46] 量比  d[47] 涨停价  d[48] 跌停价
+// d[49] 量比(同花顺口径)  d[51] 均价VWAP
+// d[62] 5日涨跌%  d[66] 市净率PB  d[67] 52周最高  d[68] 52周最低
+// ============================================================
+
+const fmt=(n,d=2)=>isNaN(n)?'--':Number(n).toFixed(d);
+const c=v=>v>0?'#e64329':v<0?'#2f8536':'#888';
+const cs=s=>s>=75?'#e64329':s>=50?'#fa8c16':'#2f8536';
+const sl=s=>s>=75?'强力看多':s>=55?'偏多':s>=40?'中性':'偏空';
+const sa=s=>s>=70?'多方占优，可持股观察':s>=55?'整体偏暖，谨慎追高':s>=40?'多空分歧，建议观望':'注意风险防守';
+
+async function run(){
+  let co=document.getElementById('code').value.trim();
+  if(!co.startsWith('sh')&&!co.startsWith('sz'))co=co[0]==='6'?'sh'+co:'sz'+co;
+  document.getElementById('out').innerHTML='<div style="text-align:center;padding:30px;color:#999">加载中...</div>';
+  document.getElementById('out').style.display='block';
+  document.getElementById('trendOut').style.display='none';
+  try{
+    let[stkRaw,idxRaw]=await Promise.all([
+      fetch('https://1422949052-dcd1zmaa7w.ap-shanghai.tencentscf.com/quote?codes='+co).then(r=>r.text()).then(t=>t.match(/="(.*?)";/)[1].split('~')),
+      fetch('https://1422949052-dcd1zmaa7w.ap-shanghai.tencentscf.com/quote?codes=sh000001').then(r=>r.text()).then(t=>t.match(/="(.*?)";/)[1].split('~')).catch(()=>null)
+    ]);
+    let d=stkRaw,i=idxRaw;
+    let name=d[1],code=d[2];
+    let price=+d[3],prev=+d[4],open=+d[5];
+    let vol=+d[6],outer=+d[7],inner=+d[8];
+    let chgAmt=+d[31],chgPct=+d[32];
+    let high=+d[33],low=+d[34];
+    let amt=+d[37],turn=+d[38],pe=+d[39];
+    let amp=+d[43],mkt=+d[44],cir=+d[45];
+    let vr=+d[49],lu=+d[47],ld=+d[48];
+    let vw=+d[51],chg5d=+d[62],pb=+d[66];
+    let wkh=+d[67],wkl=+d[68];
+    let idxChg=i?+i[32]:null;
+
+    let dayPos=high===low?50:(price-low)/(high-low)*100;
+    let vwapDev=vw?(price-vw)/vw*100:0;
+    let distU=lu>0&&price>0?(lu-price)/price*100:null;
+    let distD=ld>0&&price>0?(price-ld)/price*100:null;
+    let wkPos=wkh>0&&wkh>wkl?(price-wkl)/(wkh-wkl)*100:null;
+    let rel=idxChg!==null?chgPct-idxChg:null;
+
+    let sc={};
+    sc.trend=chgPct>3?1:chgPct<-3?-1:chgPct>0.5?0.5:chgPct<-0.5?-0.5:0;
+    sc.vol=vr>1.5?1:vr<0.7?-1:0;
+    sc.day=dayPos>70?1:dayPos<30?-1:0;
+    sc.val=pe>0&&pe<15?1:pe>30?-1:pe<=0?-0.5:0;
+    sc.env=rel!==null&&rel>0.5?1:rel!==null&&rel<-0.5?-1:0;
+    let tot=sc.trend+sc.vol+sc.day+sc.val+sc.env;
+    let score=Math.max(0,Math.min(100,Math.round((tot+2.5)/5*100)));
+    let pc=c(chgPct),cc=cs(score);
+
+    let html=`
+${(new Date().getHours()<9||new Date().getHours()>15)?'<div class="warning">⚠️ 非交易时段，数据可能有延迟</div>':''}
+<div class="card flex">
+<div><div style="font-size:18px;font-weight:bold">${name}</div><div style="color:#888;font-size:12px">${code}</div></div>
+<div style="text-align:right">
+  <div class="v" style="font-size:28px;font-weight:bold;color:${pc}">${fmt(price)}</div>
+  <div class="v" style="color:${pc}">${chgAmt>0?'+':''}${fmt(chgAmt)} (${chgPct>0?'+':''}${fmt(chgPct)}%)</div>
+</div>
+</div>
+
+<div class="card">
+<div class="score-row"><div class="score-num" style="color:${cc}">${score}</div><div class="score-label" style="background:${cc}">${sl(score)}</div></div>
+<div class="advice" style="background:${cc}15;color:${cc};border:1px solid ${cc}40">🎯 ${sa(score)}</div>
+</div>
+
+<div class="card">
+<div class="tip">五维诊断</div>
+<div class="dims">
+<div class="dim"><div class="icon">📈</div><div class="name">今日涨跌</div><div class="val" style="color:${c(chgPct)}">${chgPct>0?'+':''}${fmt(chgPct)}%</div></div>
+<div class="dim"><div class="icon">📊</div><div class="name">量比</div><div class="val">${fmt(vr)}</div></div>
+<div class="dim"><div class="icon">📍</div><div class="name">日内位</div><div class="val">${fmt(dayPos,0)}%</div></div>
+<div class="dim"><div class="icon">💰</div><div class="name">PE</div><div class="val">${pe>0?fmt(pe):'亏'}</div></div>
+<div class="dim"><div class="icon">🌍</div><div class="name">vs大盘</div><div class="val" style="color:${rel!==null?c(rel):'#999'}">${rel!==null?(rel>0?'+':'')+fmt(rel)+'%':'--'}</div></div>
+</div>
+</div>
+
+<div class="card">
+<div class="tip">基础行情</div>
+<div class="grid">
+<div class="cell"><div class="l">今开</div><div class="v">${fmt(open)}</div></div>
+<div class="cell"><div class="l">最高</div><div class="v red">${fmt(high)}</div></div>
+<div class="cell"><div class="l">最低</div><div class="v green">${fmt(low)}</div></div>
+<div class="cell"><div class="l">昨收</div><div class="v">${fmt(prev)}</div></div>
+</div>
+</div>
+
+<div class="card">
+<div class="tip">量能 · 外盘=买方主动成交(看多)，内盘=卖方主动成交(看空)</div>
+<div class="grid">
+<div class="cell"><div class="l">量比</div><div class="v">${fmt(vr)}</div></div>
+<div class="cell"><div class="l">换手率</div><div class="v">${fmt(turn)}%</div></div>
+<div class="cell"><div class="l">外盘(买)</div><div class="v red">${outer>0?(outer*100).toLocaleString():'--'}</div></div>
+<div class="cell"><div class="l">内盘(卖)</div><div class="v green">${inner>0?(inner*100).toLocaleString():'--'}</div></div>
+</div>
+</div>
+
+<div class="card">
+<div class="tip">估值 · PE正常15-30倍(银行/蓝筹偏低，成长股偏高)；PB正常1-3倍</div>
+<div class="grid">
+<div class="cell"><div class="l">市盈率PE</div><div class="v">${pe>0?fmt(pe):'亏损'}</div></div>
+<div class="cell"><div class="l">市净率PB</div><div class="v">${pb>0?fmt(pb):'--'}</div></div>
+<div class="cell"><div class="l">振幅</div><div class="v">${fmt(amp)}%</div></div>
+<div class="cell"><div class="l">5日涨跌</div><div class="v" style="color:${c(chg5d)}">${chg5d>0?'+':''}${fmt(chg5d)}%</div></div>
+</div>
+</div>
+
+<div class="card">
+<div class="tip">涨跌停 · A股涨跌停10%（ST股5%，科创/创业板20%）</div>
+<div class="grid">
+<div class="cell"><div class="l">涨停价</div><div class="v red">${lu>0?fmt(lu):'--'}</div></div>
+<div class="cell"><div class="l">当前价</div><div class="v">${fmt(price)}</div></div>
+<div class="cell"><div class="l">跌停价</div><div class="v green">${ld>0?fmt(ld):'--'}</div></div>
+<div class="cell"><div class="l">距涨停</div><div class="v red">${distU!==null?'+'+fmt(distU)+'%':'--'}</div></div>
+</div>
+<div style="text-align:center;margin-top:10px">
+  <button onclick="runTrend('${co}','${name}',${price},${chgPct},${chg5d},${turn},${vr},${pe},${pb})" style="padding:8px 20px;font-size:14px;background:#1677ff;color:#fff;border:none;border-radius:6px;cursor:pointer">📈 查看趋势分析</button>
+</div>
+<div class="help">
+<b>涨跌：</b>今日涨跌幅，正数红色上涨，负数绿色下跌<br>
+<b>量比：</b>相对近5日均量倍数，>1.5=放大量，<0.7=缩量<br>
+<b>日内位：</b>当前价在今日区间位置，70%=近高点，30%=近低点<br>
+<b>vs大盘：</b>个股涨跌幅减去上证指数涨跌幅，正=强于大盘，负=弱于大盘<br>
+<b>内外盘：</b>外盘(红)=买方主动成交=资金流入；内盘(绿)=卖方主动成交=资金流出<br>
+<b>估值：</b>PE=市盈率，越低相对越便宜(亏损显示"亏")；PB=市净率，越低越便宜
+</div>
+</div>`;
+    document.getElementById('out').innerHTML=html;
+  }catch(e){
+    document.getElementById('out').innerHTML='<div class="warning">❌ 数据获取失败：'+e.message+'</div>';
+  }}
+window.onload=run;
+
+// ============================================================
+// 趋势分析模块 v1.0
+// 数据源：新浪日K线接口（120交易日）
+// ============================================================
+const SINA_KLINE='https://1422949052-dcd1zmaa7w.ap-shanghai.tencentscf.com/kline';
+
+async function loadKline(code,days=120){
+  try{
+    const url=`${SINA_KLINE}?code=${code}&days=${days}`;
+    const r=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0"}});
+    const text=await r.text();
+    const json=JSON.parse(text.replace(/^kline_dayqfq=/,""));
+    if(json.code!==0||!json.data)return null;
+    const sym=Object.keys(json.data)[0];
+    const raw=json.data[sym].qfqday||json.data[sym].day||[];
+    // 腾讯日K在交易时间段混入今日partial柱（当日实时价≈收盘，非真正日K收盘）
+    // 过滤掉今日数据，保留完整的昨日及之前日K
+    const today=new Date().toISOString().slice(0,10);
+    const complete=raw.filter(d=>d[0]!==today);
+    // 腾讯K线原始顺序：升序（最老日期在 arr[0]，最新日期在 arr[-1]）
+    // 反转为降序：最新日期在前，兼容所有代码逻辑（closes[0]=昨收）
+    complete.reverse();
+    // 兼容：支持新浪 named object（字段为{day,open,high,low,close,vol}）和腾讯数组格式
+    return complete.map(d=>{
+      if(typeof d==='object'&&!Array.isArray(d)){
+        return {day:d.day,open:+d.open,close:+d.close,high:+d.high,low:+d.low,volume:+d.volume};
+      }
+      return {day:d[0],open:+d[1],close:+d[2],high:+d[3],low:+d[4],volume:+d[5]};
+    });
+  }catch(e){return null;}
+}
+function calcMA(closes,n){
+  if(closes.length<n)return null;
+  let sum=0;
+  for(let i=0;i<n;i++)sum+=closes[i];
+  return sum/n;
+}
+
+function calcRSI(closes,n=14){
+  if(closes.length<=n)return null;
+  let gains=0,losses=0;
+  for(let i=1;i<=n;i++){
+    const diff=closes[i-1]-closes[i];
+    if(diff>0)gains+=diff;else losses-=diff;
+  }
+  if(losses===0)return null;
+  return Math.round((100-100/(1+gains/losses))*10)/10;
+}
+
+function volRatio(vols){
+  if(vols.length<6)return 0;
+  const avg=(vols.slice(0,5).reduce((a,b)=>a+b,0)/5);
+  return avg>0?((vols[0]/avg)-1)*100:0;
+}
+
+async function runTrend(code,name,price,chgPct,chg5d,turn,vr,pe,pb){
+  const out=document.getElementById('trendOut');
+  out.innerHTML='<div class="card"><div style="text-align:center;padding:30px;color:#999">📈 加载120日历史趋势中...</div></div>';
+  out.style.display='block';
+  document.getElementById('out').scrollIntoView({behavior:'smooth'});
+
+  const sinaCode=code.startsWith('sh')?('sh'+code.slice(2)):('sz'+code.slice(2));
+  const kdata=await loadKline(sinaCode,120);
+  if(!kdata||kdata.length<30){
+    out.innerHTML='<div class="card"><div class="warning">⚠️ 趋势数据获取失败（新浪接口暂不可用）</div></div>';
+    return;
+  }
+
+  const cur=+price; // 实时价（来自腾讯行情接口），用于当前价格定位
+  const days=kdata.length;
+  // closes[0]=昨日收盘(最新完整日K)，按时间倒序
+  const closes=kdata.map(d=>+d.close);
+  const vols=kdata.map(d=>+d.volume);
+  const highs=kdata.map(d=>+d.high);
+  const lows=kdata.map(d=>+d.low);
+
+  const ma5=calcMA(closes,5);
+  const ma10=calcMA(closes,10);
+  const ma20=calcMA(closes,20);
+  const ma60=days>=60?calcMA(closes,60):null;
+
+  // 均线斜率（元/天）：=(当前MA均值 - N交易日前收盘价) / N
+  // 降序数据：closes[0]=昨收, closes[5]=5交易日前, closes[10]=10交易日前...
+  const ma5Slope=ma5&&closes[5]?(ma5-closes[5])/5:0;
+  const ma10Slope=ma10&&closes[10]?(ma10-closes[10])/10:0;
+  const ma20Slope=ma20&&closes[20]?(ma20-closes[20])/20:0;
+
+  const rsi14=calcRSI(closes,14);
+  const rsi6=calcRSI(closes,6);
+  const rsiAvg=rsi14&&rsi6?(rsi14+rsi6)/2:(rsi14||rsi6||50);
+
+  // 近20日高低点（用完整日K的高/低价，非收盘价）
+  const h20=Math.max(...highs.slice(0,20));
+  const l20=Math.min(...lows.slice(0,20));
+  const range20=h20-l20;
+  const pos20=range20>0?(cur-l20)/range20*100:50;
+
+  const vstr=volRatio(vols);
+
+  // 各周期涨跌：实时价 vs N个交易日前收盘（closes[0]=昨收，closes[1]=前天收...）
+  const p5d=chg5d; // 今日涨跌%
+  const p10d=days>=10?(cur/closes[9]-1)*100:null; // 10日前→closes[9]
+  const p20d=days>=20?(cur/closes[19]-1)*100:null;
+  const p60d=days>=60?(cur/closes[59]-1)*100:null;
+
+  // MA排列
+  const arrUp=ma5>ma10&&ma10>ma20;
+  const arrDown=ma5<ma10&&ma10<ma20;
+  const arrMix=!arrUp&&!arrDown;
+
+  // 综合评分
+  let sc=0;const reasons=[];
+
+  if(arrUp){sc+=3;reasons.push({k:'+',t:'MA5>MA10>MA20，多头排列，上升趋势'});
+  }else if(arrDown){sc-=3;reasons.push({k:'-',t:'MA5<MA10<MA20，空头排列，下降趋势'});
+  }else{reasons.push({k:'~',t:'均线混乱排列（'+((ma5>ma10)?'MA5在MA10上':'MA5在MA10下')+'），趋势震荡'});}
+
+  if(ma5Slope>0.15){sc+=2;reasons.push({k:'+',t:'MA5向上(↗)，短期动能向上'});
+  }else if(ma5Slope<-0.15){sc-=2;reasons.push({k:'-',t:'MA5向下(↘)，短期动能向下'});}
+  if(ma10Slope>0.08){sc+=1;
+  }else if(ma10Slope<-0.08){sc-=1;}
+
+  const pvsMA20=ma20?(cur-ma20)/ma20*100:0;
+  if(pvsMA20>5){sc+=2;reasons.push({k:'+',t:`价格高于MA20 ${pvsMA20.toFixed(1)}%，中期强势`});
+  }else if(pvsMA20<-5){sc-=2;reasons.push({k:'-',t:`价格低于MA20 ${Math.abs(pvsMA20).toFixed(1)}%，中期弱势`});
+  }else{reasons.push({k:'~',t:'价格围绕MA20波动，中期方向不明确'});}
+
+  if(rsiAvg>70){sc-=1;reasons.push({k:'-',t:`RSI(14)=${rsi14} > 70 超买区，注意短线回调风险`});
+  }else if(rsiAvg<30){sc+=1;reasons.push({k:'+',t:`RSI(14)=${rsi14} < 30 超卖区，可能有反弹机会`});
+  }else if(rsiAvg>=40&&rsiAvg<=65){sc+=1;reasons.push({k:'+',t:`RSI=${rsiAvg}在合理区间(40-65)，多空平衡偏强`});}
+
+  if(vstr>20&&sc>0){sc+=1;reasons.push({k:'+',t:`量能放大(+${vstr.toFixed(0)}%)配合上涨，上升有支撑`});
+  }else if(vstr>20&&sc<0){sc+=0;reasons.push({k:'~',t:`放量但价格下跌，多空分歧`});
+  }else if(vstr<-30&&sc<0){sc-=1;reasons.push({k:'-',t:`量能萎缩(-${Math.abs(vstr).toFixed(0)}%)，价跌无支撑`});}
+
+  if(pos20>80){sc-=1;reasons.push({k:'-',t:`处20日高点区(第${pos20.toFixed(0)}百分位)，注意回调压力`});
+  }else if(pos20<20){sc+=1;reasons.push({k:'+',t:`处20日低点区(第${pos20.toFixed(0)}百分位)，有支撑反弹可能`});}
+
+  const periodArr=[{p:'5日',v:p5d},{p:'10日',v:p10d},{p:'20日',v:p20d},{p:'60日',v:p60d}].filter(p=>p.v!==null);
+  const upCnt=periodArr.filter(p=>p.v>0).length;
+  const dnCnt=periodArr.filter(p=>p.v<0).length;
+  if(upCnt>=3){sc+=2;reasons.push({k:'+',t:`近${periodArr.length}个周期全涨，趋势惯性向上`});
+  }else if(dnCnt>=3){sc-=2;reasons.push({k:'-',t:`近${periodArr.length}个周期全跌，趋势惯性向下`});
+  }else if(upCnt>dnCnt){sc+=1;}else if(dnCnt>upCnt){sc-=1;}
+
+  const stage=
+    sc>=7?{n:'🚀 加速上升',d:'多方主导加速中，趋势强劲，注意高位追高风险',c:'#e64329'}:
+    sc>=4?{n:'📈 上升趋势',d:'上升趋势确立，回调不破均线可持有，关注量能是否持续配合',c:'#2f8536'}:
+    sc>=1?{n:'🔼 初步转强',d:'底部企稳初期，方向待确认，等待均线修复和量能放大确认',c:'#1677ff'}:
+    sc<=-7?{n:'💨 加速下降',d:'空方主导加速中，下降趋势强，建议观望或止损，不要抄底',c:'#555'}:
+    sc<=-4?{n:'📉 下降趋势',d:'下降趋势确立，未出现止跌信号前不抄底，等待底部结构出现',c:'#999'}:
+    sc<=-1?{n:'🔽 初步转弱',d:'冲高乏力或顶部初期，注意高位减仓信号，谨慎追涨',c:'#fa8c16'}:
+    {n:'🔄 震荡整理',d:'多空博弈区间，方向待突破确认，高抛低吸为主',c:'#888'};
+
+  // 渲染
+  const rBg=sc>0?'linear-gradient(135deg,#e8f5e9,#c8e6c9)':sc<0?'linear-gradient(135deg,#fce4ec,#f8bbd0)':'linear-gradient(135deg,#f5f5f5,#e0e0e0)';
+  let rHTML=reasons.map(r=>{
+    const col=r.k==='+'?'#2f8536':r.k==='-'?'#e64329':'#888';
+    const ico=r.k==='+'?'✅':r.k==='-'?'⚠️':'➖';
+    return`<div style="margin:5px 0;font-size:13px;padding:4px 0;border-bottom:1px solid #f0f0f0"><span style="color:${col}">${ico}</span> ${r.t}</div>`;
+  }).join('');
+
+  const rsiColor=rsiAvg>70?'#e64329':rsiAvg<30?'#2f8536':'#1677ff';
+  const rsiLabel=rsiAvg>70?'⚠️超买':rsiAvg<30?'📈超卖':'正常';
+
+  let html=`
+<div class="card" style="border-left:5px solid ${stage.c};background:${rBg}">
+  <div style="font-size:13px;font-weight:bold;margin-bottom:10px">📈 趋势分析 · ${name}（近${days}个交易日）</div>
+  <div style="text-align:center;margin-bottom:12px">
+    <div style="font-size:11px;color:#666;margin-bottom:4px">综合评分 <span style="font-size:10px;color:#aaa">(均线+动量+量能+区间+周期)</span></div>
+    <div style="font-size:44px;font-weight:bold;color:${stage.c}">${sc>0?'+':''}${sc}</div>
+    <div style="display:inline-block;margin-top:4px;padding:5px 20px;border-radius:20px;font-size:16px;font-weight:bold;color:#fff;background:${stage.c}">${stage.n}</div>
+    <div style="font-size:12px;color:#555;margin-top:8px;padding:8px 12px;background:rgba(255,255,255,0.7);border-radius:6px">${stage.d}</div>
+  </div>
+  <div style="border-top:1px solid rgba(0,0,0,0.1);padding-top:10px">
+    <div style="font-size:11px;color:#888;margin-bottom:6px">📋 判断依据（共${reasons.length}项）</div>
+    ${rHTML}
+  </div>
+</div>
+
+<div class="card">
+  <div style="font-size:11px;color:#888;margin-bottom:8px">📊 均线系统 · MA收盘价均线（腾讯日K前复权）</div>
+  <div style="font-size:10px;color:#aaa;margin-top:-4px;margin-bottom:8px">
+    MA=N日收盘价均值，腾讯K线为前复权数据（长期历史价被拉伸），长期均线偏低；同花顺周/月线为周期合成K柱，与日线MA不可直接对比
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:6px">
+    ${[{n:'MA5',v:ma5},{n:'MA10',v:ma10},{n:'MA20',v:ma20},{n:'MA60',v:ma60}].filter(m=>m.v).map(m=>`
+    <div style="text-align:center;background:#f5f5f5;padding:6px 2px;border-radius:5px">
+      <div style="font-size:10px;color:#888">${m.n}</div>
+      <div style="font-weight:bold;color:#1677ff;font-size:13px">${m.v?m.v.toFixed(2):'--'}</div>
+    </div>`).join('')}
+  </div>
+  <div style="font-size:11px;color:#555">均线排列：<b style="color:${arrUp?'#e64329':arrDown?'#2f8536':'#888'}">${
+    arrUp?'📈 多头排列（上升）':arrDown?'📉 空头排列（下降）':'🔄 混乱排列（震荡）'
+  }</b></div>
+  <div style="font-size:10px;color:#999;margin-top:3px">
+    斜率：MA5 ${ma5Slope>0?'↗':'↘'} ${Math.abs(ma5Slope).toFixed(2)}元/天 &nbsp;|&nbsp; MA20 ${ma20Slope>0?'↗':'↘'} ${Math.abs(ma20Slope).toFixed(2)}元/天
+  </div>
+</div>
+
+<div class="card">
+  <div style="font-size:11px;color:#888;margin-bottom:8px">📉 多周期涨跌（正=涨 负=跌）</div>
+  <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+  ${periodArr.map(p=>`
+    <div style="text-align:center;min-width:52px">
+      <div style="font-size:10px;color:#888;margin-bottom:3px">${p.p}</div>
+      <div style="width:36px;height:36px;margin:0 auto;background:#f5f5f5;border-radius:50%;display:flex;align-items:center;justify-content:center">
+        <div style="width:26px;height:26px;border-radius:50%;background:${p.v>=0?'#e64329':'#2f8536'};opacity:0.85"></div>
+      </div>
+      <div style="font-size:13px;font-weight:bold;margin-top:3px;color:${p.v>=0?'#e64329':'#2f8536'}">${p.v>0?'+':''}${p.v.toFixed(1)}%</div>
+    </div>`).join('')}
+  </div>
+</div>
+
+<div class="card">
+  <div style="font-size:11px;color:#888;margin-bottom:8px">⚡ RSI动量 · RSI(14)=${rsi14||'--'} &nbsp;|&nbsp; RSI(6)=${rsi6||'--'} &nbsp;|&nbsp; 量能强度 ${vstr>0?'+':'--'}${vstr.toFixed(0)}%</div>
+  <div style="display:flex;gap:12px;align-items:center">
+    <div style="flex:1">
+      <div style="font-size:10px;color:#888;margin-bottom:4px">RSI(14) 范围0-100</div>
+      <div style="height:14px;background:#f0f0f0;border-radius:7px;overflow:hidden;position:relative">
+        <div style="position:absolute;left:0;top:0;bottom:0;width:${rsi14||50}%;background:${rsiColor};border-radius:7px;opacity:0.8"></div>
+        <div style="position:absolute;left:70%;top:0;bottom:0;width:1px;background:#e64329;opacity:0.5"></div>
+        <div style="position:absolute;left:30%;top:0;bottom:0;width:1px;background:#2f8536;opacity:0.5"></div>
+      </div>
+      <div style="font-size:10px;color:#999;margin-top:2px">←30 超卖 | 70 超买→</div>
+    </div>
+  </div>
+  <div style="margin-top:8px;font-size:12px;color:${rsiColor}">RSI(14)=${rsi14||'--'} ${rsiLabel} · 量能${vstr>20?'放大':'<=-30'?'萎缩':'正常'}</div>
+</div>
+
+<div class="card">
+  <div style="font-size:11px;color:#888;margin-bottom:8px">📍 20日价格区间（当前价=${cur.toFixed(2)}）</div>
+  <div style="display:flex;justify-content:space-between;font-size:10px;color:#999;margin-bottom:4px">
+    <span>低 ${l20.toFixed(2)}</span>
+    <span style="background:#1677ff;color:#fff;padding:1px 8px;border-radius:3px;font-weight:bold">${pos20.toFixed(0)}%</span>
+    <span>高 ${h20.toFixed(2)}</span>
+  </div>
+  <div style="height:10px;background:#f0f0f0;border-radius:5px;position:relative;overflow:visible">
+    <div style="position:absolute;left:0;top:0;bottom:0;width:${pos20}%;background:linear-gradient(90deg,#1677ff,#5cb3ff);border-radius:5px"></div>
+    <div style="position:absolute;top:-4px;width:3px;height:18px;background:#333;border-radius:2px;left:${pos20}%"></div>
+  </div>
+  <div style="font-size:10px;color:#999;margin-top:3px">${
+    pos20<20?'接近20日低点，支撑位较强':pos20>80?'接近20日高点，压力位较强':'在20日区间中部运行'
+  }</div>
+</div>
+
+<div class="card">
+  <div style="font-size:11px;color:#888;margin-bottom:6px">💡 评分说明</div>
+  <div class="help" style="border-top:none;margin-top:0;padding-top:0">
+    <b>综合评分：</b>均线系统(40%)+动量RSI(20%)+价格vs均线(20%)+量能(10%)+周期惯性(10%)<br>
+    <b>+6分以上</b>='加速上升'，<b>-6分以下</b>='加速下降'，0分附近='震荡整理'<br>
+    <b>多头排列：</b>MA5>MA10>MA20，是经典上升趋势确认信号<br>
+    <b>RSI：</b>>>70超买易回调，<30超卖易反弹，40-65正常偏强<br>
+    <b>量能强度：</b>今日量相对20日均量偏差，>20%=放量配合，<-30%=缩量背离
+  </div>
+</div>`;
+
+  out.innerHTML=html;
+}
+</script>
+</body>
+</html>
